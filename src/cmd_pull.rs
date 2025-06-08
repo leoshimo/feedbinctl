@@ -1,5 +1,6 @@
 use crate::config::{Config, Search};
 use anyhow::{Context, Result};
+use keyring::Entry;
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -33,7 +34,16 @@ fn tag_var_name(name: &str) -> String {
 }
 
 pub async fn run() -> Result<()> {
-    let token = std::env::var("FEEDBIN_TOKEN").context("FEEDBIN_TOKEN not set")?;
+    let token = match std::env::var("FEEDBIN_TOKEN") {
+        Ok(t) => t,
+        Err(_) => {
+            let entry = Entry::new("feedbinctl", "feedbin")
+                .context("failed to open keyring entry")?;
+            entry
+                .get_password()
+                .context("FEEDBIN_TOKEN not set and failed to read credentials from keyring")?
+        }
+    };
     let (username, password) = token
         .split_once(':')
         .context("FEEDBIN_TOKEN must be in 'username:password' format")?;
