@@ -2,6 +2,8 @@
 
 Manage Feedbin [Saved Searches](https://github.com/feedbin/feedbin-api/blob/master/content/saved-searches.md) from a configuration file.
 
+*Disclaimer:* This project is an exercise with Codex.
+
 ## Commands
 
 * `feedbinctl pull` - pull current Saved Searches and tags; writes tag‑ID variables into your config.
