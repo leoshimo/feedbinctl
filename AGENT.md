@@ -54,3 +54,8 @@ Mock HTTP with `wiremock` to keep tests offline.
 | Logging      | `tracing` + `tracing_subscriber` |
 | Testing HTTP | `wiremock`                       |
 | XDG paths    | `directories`                    |
+
+## Build
+
+* Always run `cargo check`, `cargo build`, and `cargo test`.
+* Fix all warnings and errors until all three commands succeed.
