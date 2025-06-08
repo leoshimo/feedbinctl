@@ -14,6 +14,7 @@ struct SavedSearch {
 #[derive(Debug, Deserialize)]
 struct Tagging {
     id: u64,
+    tag_id: u64,
     name: String,
 }
 
@@ -72,20 +73,45 @@ pub async fn run() -> Result<()> {
 
     let mut vars = BTreeMap::new();
     for tag in &taggings {
-        vars.insert(tag_var_name(&tag.name), tag.id.to_string());
+        vars.insert(tag_var_name(&tag.name), tag.tag_id.to_string());
     }
 
     let searches = searches
         .into_iter()
-        .map(|s| Search {
-            name: s.name,
-            query: s.query,
+        .map(|s| {
+            let mut query = s.query;
+            for (name, id) in &vars {
+                let needle = format!("tag_id:{id}");
+                if query.contains(&needle) {
+                    let replacement = format!("tag_id:{{{{ {name} }}}}");
+                    query = query.replace(&needle, &replacement);
+                }
+            }
+            Search {
+                name: s.name,
+                query,
+            }
         })
         .collect();
 
     let config = Config { vars, searches };
-    let toml = toml_edit::ser::to_string_pretty(&config)?;
-    println!("{}", toml);
+
+    fn sq(s: &str) -> String {
+        format!("'{}'", s.replace('\'', "''"))
+    }
+
+    println!("# feedbinctl configuration\n");
+    println!("[vars]");
+    for (k, v) in &config.vars {
+        println!("{} = \"{}\"", k, v);
+    }
+
+    for search in &config.searches {
+        println!();
+        println!("[[searches]]");
+        println!("name = {}", sq(&search.name));
+        println!("query = {}", sq(&search.query));
+    }
     Ok(())
 }
 
