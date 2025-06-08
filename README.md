@@ -7,7 +7,8 @@ Manage Feedbin [Saved Searches](https://github.com/feedbin/feedbin-api/blob/mast
 * `feedbinctl pull` - pull current Saved Searches and tags; writes tag‑ID variables into your config.
 * `feedbinctl diff` - show differences between your configuration file and Feedbin.
 * `feedbinctl push` - make Feedbin match the configuration file.
-* `feedbinctl auth login` -store your Feedbin token securely in the OS keyring.
+* `feedbinctl auth login` - store your Feedbin credentials securely in the OS keyring.
+  These credentials are used for HTTP basic authentication ("username:password").
 
 ## Installation
 
