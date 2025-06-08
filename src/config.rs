@@ -27,7 +27,7 @@ mod tests {
 github_tag_id = "42"           # GitHub
 acme_tag_id = "99"             # Acme
 x_tag_id = "1234"              # X
-mastadon_tag_id = "54321"      # X
+mastadon_tag_id = "54321"      # Mastodon
 topic_query = '"emacs" OR "plan9" OR "rust"'
 recent_filter = 'published:>now-7d'
 social = "tag_id:{{ x_tag_id }} OR tag_id:{{ mastodon_tag_id }}"
