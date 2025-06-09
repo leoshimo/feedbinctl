@@ -33,12 +33,12 @@ fn tag_var_name(name: &str) -> String {
     out
 }
 
-pub async fn run() -> Result<()> {
+pub async fn fetch_feedbin_config() -> Result<Config> {
     let token = match std::env::var("FEEDBIN_TOKEN") {
         Ok(t) => t,
         Err(_) => {
-            let entry = Entry::new("feedbinctl", "feedbin")
-                .context("failed to open keyring entry")?;
+            let entry =
+                Entry::new("feedbinctl", "feedbin").context("failed to open keyring entry")?;
             entry
                 .get_password()
                 .context("FEEDBIN_TOKEN not set and failed to read credentials from keyring")?
@@ -94,6 +94,12 @@ pub async fn run() -> Result<()> {
         .collect();
 
     let config = Config { vars, searches };
+
+    Ok(config)
+}
+
+pub async fn run() -> Result<()> {
+    let config = fetch_feedbin_config().await?;
 
     fn sq(s: &str) -> String {
         format!("'{}'", s.replace('\'', "''"))

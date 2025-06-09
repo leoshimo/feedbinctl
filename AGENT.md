@@ -57,5 +57,6 @@ Mock HTTP with `wiremock` to keep tests offline.
 
 ## Build
 
-* Always run `cargo check`, `cargo build`, and `cargo test`.
-* Fix all warnings and errors until all three commands succeed.
+* Always run `cargo fmt --all`, `cargo check`, `cargo build`, `cargo lint` (alias
+  for `cargo clippy -- -D warnings`), and `cargo test`.
+* Fix all warnings and errors until all commands succeed.

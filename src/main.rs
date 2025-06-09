@@ -1,9 +1,9 @@
 mod cli;
-mod config;
-mod cmd_pull;
-mod cmd_diff;
-mod cmd_push;
 mod cmd_auth;
+mod cmd_diff;
+mod cmd_pull;
+mod cmd_push;
+mod config;
 
 use anyhow::Result;
 use clap::Parser;

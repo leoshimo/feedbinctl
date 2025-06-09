@@ -19,7 +19,6 @@ pub struct Search {
 mod tests {
     use super::*;
 
-
     const SAMPLE_CONFIG: &str = r#"
 # feedbinctl configuration
 
