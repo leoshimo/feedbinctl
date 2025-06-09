@@ -26,7 +26,7 @@ Internal design notes for **feedbinctl**
 ### Core Functionality
 
 * Parse / serialise configuration (TOML primary; YAML/JSON optional).
-* Tag‑name → ID resolution **every run** by calling the Taggings API.
+* Tag‑name → ID resolution **every run** by calling the Tags API.
 * Operation planner that converts Desired vs Actual into API requests.
 
 ---

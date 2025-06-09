@@ -12,9 +12,8 @@ struct SavedSearch {
 }
 
 #[derive(Debug, Deserialize)]
-struct Tagging {
+struct Tag {
     id: u64,
-    tag_id: u64,
     name: String,
 }
 
@@ -61,19 +60,19 @@ pub async fn run() -> Result<()> {
         .await
         .context("failed to fetch saved searches")?;
 
-    let taggings: Vec<Tagging> = client
-        .get("https://api.feedbin.com/v2/taggings.json")
+    let tags: Vec<Tag> = client
+        .get("https://api.feedbin.com/v2/tags.json")
         .basic_auth(username, Some(password))
         .send()
         .await?
         .error_for_status()?
         .json()
         .await
-        .context("failed to fetch taggings")?;
+        .context("failed to fetch tags")?;
 
     let mut vars = BTreeMap::new();
-    for tag in &taggings {
-        vars.insert(tag_var_name(&tag.name), tag.tag_id.to_string());
+    for tag in &tags {
+        vars.insert(tag_var_name(&tag.name), tag.id.to_string());
     }
 
     let searches = searches
