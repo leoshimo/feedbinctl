@@ -15,8 +15,7 @@ pub async fn login() -> Result<()> {
     let password = prompt_password("Feedbin password: ")?;
 
     let credentials = format!("{}:{}", username, password);
-    let entry = Entry::new("feedbinctl", "feedbin")
-        .context("failed to open keyring entry")?;
+    let entry = Entry::new("feedbinctl", "feedbin").context("failed to open keyring entry")?;
     entry
         .set_password(&credentials)
         .context("failed to store credentials in keyring")?;
@@ -26,8 +25,7 @@ pub async fn login() -> Result<()> {
 }
 
 pub async fn logout() -> Result<()> {
-    let entry = Entry::new("feedbinctl", "feedbin")
-        .context("failed to open keyring entry")?;
+    let entry = Entry::new("feedbinctl", "feedbin").context("failed to open keyring entry")?;
     match entry.delete_password() {
         Ok(_) => println!("Credentials removed from keyring"),
         Err(err) => println!("No credentials found ({err})"),
