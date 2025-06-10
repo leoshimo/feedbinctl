@@ -1,7 +1,7 @@
 use crate::cmd_pull::fetch_feedbin_config;
 use crate::config::{Config, Search};
 use anyhow::{Context, Result};
-use directories::BaseDirs;
+
 use handlebars::Handlebars;
 use owo_colors::OwoColorize;
 use std::collections::BTreeMap;
@@ -68,11 +68,14 @@ pub fn diff_configs(current: &Config, desired: &Config) -> Result<Vec<DiffOp>> {
 }
 
 fn config_path() -> Result<PathBuf> {
-    let base = BaseDirs::new()
-        .context("could not determine configuration directory")?
-        .config_dir()
-        .to_path_buf();
-    Ok(base.join("feedbinctl").join("config"))
+    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
+        return Ok(PathBuf::from(dir).join("feedbinctl").join("config"));
+    }
+
+    let home = std::env::var("HOME")
+        .map(PathBuf::from)
+        .context("could not determine home directory")?;
+    Ok(home.join(".config").join("feedbinctl").join("config"))
 }
 
 async fn load_local_config() -> Result<Option<Config>> {
