@@ -7,6 +7,7 @@ Manage Feedbin [Saved Searches](https://github.com/feedbin/feedbin-api/blob/mast
 ## Commands
 
 * `feedbinctl pull` - pull current Saved Searches and tags; writes tag‑ID variables into your config.
+* `feedbinctl sync` - pull from Feedbin and merge into your config file.
 * `feedbinctl diff` - show differences between your configuration file and Feedbin.
 * `feedbinctl push` - make Feedbin match the configuration file.
 * `feedbinctl auth login` - store your Feedbin credentials securely in the OS keyring.
@@ -63,6 +64,9 @@ emacs ~/.config/feedbinctl/config
 
 # Preview changes
 feedbinctl diff
+
+# Refresh configuration with current Feedbin state
+feedbinctl sync
 
 # Apply when ready
 feedbinctl push

@@ -3,7 +3,9 @@ mod cmd_auth;
 mod cmd_diff;
 mod cmd_pull;
 mod cmd_push;
+mod cmd_sync;
 mod config;
+mod config_file;
 
 use anyhow::Result;
 use clap::Parser;
@@ -15,6 +17,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Pull => cmd_pull::run().await,
+        Commands::Sync => cmd_sync::run().await,
         Commands::Diff => cmd_diff::run().await,
         Commands::Push => cmd_push::run().await,
         Commands::Auth(auth_cmd) => match auth_cmd {

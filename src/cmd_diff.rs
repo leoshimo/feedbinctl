@@ -2,10 +2,10 @@ use crate::cmd_pull::fetch_feedbin_config;
 use crate::config::{Config, Search};
 use anyhow::{Context, Result};
 
+use crate::config_file::load_local_config;
 use handlebars::Handlebars;
 use owo_colors::OwoColorize;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 #[derive(Debug, PartialEq)]
 pub enum DiffOp {
@@ -67,39 +67,12 @@ pub fn diff_configs(current: &Config, desired: &Config) -> Result<Vec<DiffOp>> {
     Ok(ops)
 }
 
-fn config_path() -> Result<PathBuf> {
-    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
-        return Ok(PathBuf::from(dir).join("feedbinctl").join("config"));
-    }
-
-    let home = std::env::var("HOME")
-        .map(PathBuf::from)
-        .context("could not determine home directory")?;
-    Ok(home.join(".config").join("feedbinctl").join("config"))
-}
-
-async fn load_local_config() -> Result<Option<Config>> {
-    let path = config_path()?;
-    let data = match tokio::fs::read_to_string(&path).await {
-        Ok(d) => d,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            eprintln!("No config found at {}", path.display());
-            return Ok(None);
-        }
-        Err(err) => {
-            return Err(err).with_context(|| format!("failed to read {}", path.display()));
-        }
-    };
-    let cfg: Config = toml_edit::de::from_str(&data).context("failed to parse config file")?;
-    Ok(Some(cfg))
-}
-
 pub async fn run() -> Result<()> {
     let desired = match load_local_config().await? {
         Some(cfg) => cfg,
         None => return Ok(()),
     };
-    let current = fetch_feedbin_config().await?;
+    let current = fetch_feedbin_config(None).await?;
 
     let ops = diff_configs(&current, &desired)?;
 
