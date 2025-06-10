@@ -103,11 +103,40 @@ pub async fn run() -> Result<()> {
 
     let ops = diff_configs(&current, &desired)?;
 
+    let desired_raw: BTreeMap<_, _> = desired
+        .searches
+        .iter()
+        .map(|s| (s.name.clone(), s.query.clone()))
+        .collect();
+    let current_raw: BTreeMap<_, _> = current
+        .searches
+        .iter()
+        .map(|s| (s.name.clone(), s.query.clone()))
+        .collect();
+
     for op in ops {
         match op {
-            DiffOp::Create(s) => println!("{} {}", "+".green(), s.name.green()),
-            DiffOp::Delete(s) => println!("{} {}", "-".red(), s.name.red()),
-            DiffOp::Update { from: _, to } => println!("{} {}", "~".yellow(), to.name.yellow()),
+            DiffOp::Create(s) => {
+                println!("{} {}", "+".green(), s.name.green());
+                if let Some(raw) = desired_raw.get(&s.name) {
+                    println!("{}", raw);
+                }
+                println!("{}", s.query);
+            }
+            DiffOp::Delete(s) => {
+                println!("{} {}", "-".red(), s.name.red());
+                if let Some(raw) = current_raw.get(&s.name) {
+                    println!("{}", raw);
+                }
+                println!("{}", s.query);
+            }
+            DiffOp::Update { from: _, to } => {
+                println!("{} {}", "~".yellow(), to.name.yellow());
+                if let Some(raw) = desired_raw.get(&to.name) {
+                    println!("{}", raw);
+                }
+                println!("{}", to.query);
+            }
         }
     }
     Ok(())
