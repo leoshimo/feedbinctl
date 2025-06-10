@@ -1,4 +1,5 @@
 use crate::config::{Config, Search};
+use crate::config_file::load_local_config;
 use anyhow::{Context, Result};
 use keyring::Entry;
 use reqwest::Client;
@@ -12,12 +13,21 @@ struct SavedSearch {
 }
 
 #[derive(Debug, Deserialize)]
-struct Tag {
+pub(crate) struct Tag {
     id: u64,
     name: String,
 }
 
-fn tag_var_name(name: &str) -> String {
+fn apply_vars(mut query: String, vars: &BTreeMap<String, String>) -> String {
+    for (name, val) in vars {
+        if !val.is_empty() && query.contains(val) {
+            let replacement = format!("{{{{ {name} }}}}");
+            query = query.replace(val, &replacement);
+        }
+    }
+    query
+}
+pub fn tag_var_name(name: &str) -> String {
     let mut out = String::new();
     for c in name.chars() {
         if c.is_ascii_alphanumeric() {
@@ -33,7 +43,9 @@ fn tag_var_name(name: &str) -> String {
     out
 }
 
-async fn fetch_feedbin_config_with_tags() -> Result<(Config, Vec<Tag>)> {
+pub(crate) async fn fetch_feedbin_config_with_tags(
+    existing_vars: Option<&BTreeMap<String, String>>,
+) -> Result<(Config, Vec<Tag>)> {
     let token = match std::env::var("FEEDBIN_TOKEN") {
         Ok(t) => t,
         Err(_) => {
@@ -86,6 +98,9 @@ async fn fetch_feedbin_config_with_tags() -> Result<(Config, Vec<Tag>)> {
                     query = query.replace(&needle, &replacement);
                 }
             }
+            if let Some(ext) = existing_vars {
+                query = apply_vars(query, ext);
+            }
             Search {
                 name: s.name,
                 query,
@@ -98,12 +113,16 @@ async fn fetch_feedbin_config_with_tags() -> Result<(Config, Vec<Tag>)> {
     Ok((config, tags))
 }
 
-pub async fn fetch_feedbin_config() -> Result<Config> {
-    Ok(fetch_feedbin_config_with_tags().await?.0)
+pub(crate) async fn fetch_feedbin_config(
+    existing_vars: Option<&BTreeMap<String, String>>,
+) -> Result<Config> {
+    Ok(fetch_feedbin_config_with_tags(existing_vars).await?.0)
 }
 
 pub async fn run() -> Result<()> {
-    let (config, tags) = fetch_feedbin_config_with_tags().await?;
+    let local = load_local_config().await?;
+    let vars = local.as_ref().map(|c| &c.vars);
+    let (config, tags) = fetch_feedbin_config_with_tags(vars).await?;
 
     fn sq(s: &str) -> String {
         format!("'{}'", s.replace('\'', "''"))
@@ -130,12 +149,21 @@ pub async fn run() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::tag_var_name;
+    use super::{apply_vars, tag_var_name};
+    use std::collections::BTreeMap;
 
     #[test]
     fn tag_var_name_basic() {
         assert_eq!(tag_var_name("GitHub"), "github_tag_id");
         assert_eq!(tag_var_name("My Tag"), "my_tag_tag_id");
         assert_eq!(tag_var_name("C++"), "c__tag_id");
+    }
+
+    #[test]
+    fn apply_vars_basic() {
+        let mut vars = BTreeMap::new();
+        vars.insert("q".into(), "foo bar".into());
+        let out = apply_vars("foo bar baz".to_string(), &vars);
+        assert_eq!(out, "{{ q }} baz");
     }
 }

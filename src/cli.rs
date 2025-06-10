@@ -11,6 +11,8 @@ pub struct Cli {
 pub enum Commands {
     /// Fetch saved searches and tags
     Pull,
+    /// Fetch and merge into config file
+    Sync,
     /// Display planned changes between config and Feedbin
     Diff,
     /// Apply changes to Feedbin
