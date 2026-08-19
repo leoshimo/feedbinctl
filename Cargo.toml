@@ -2,22 +2,23 @@
 name = "feedbinctl"
 version = "0.1.0"
 edition = "2024"
+description = "Index and search Feedbin entries from the command line"
+license = "MIT"
+repository = "https://github.com/leoshimo/feedbinctl"
+keywords = ["feedbin", "rss", "search", "sqlite"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 directories = "5"
-handlebars = "4"
 keyring = "2"
 reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
-serde = { version = "1", features = ["derive"] }
-thiserror = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
-toml_edit = { version = "0.21", features = ["serde"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
 rpassword = "7"
-owo-colors = "3"
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [dev-dependencies]
 wiremock = "0.5"

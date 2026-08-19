@@ -1,62 +1,45 @@
-# AGENT.md
+# Working on feedbinctl
 
-Internal design notes for **feedbinctl**
+`feedbinctl` deliberately has a small command surface:
 
----
+- `auth` validates and stores credentials; `auth --logout` removes them.
+- `index` is the only bulk network operation. It incrementally writes compact
+  metadata to SQLite and is safe to repeat.
+- `entries` pages through locally indexed entries with `--before ENTRY_ID`.
+- `search` queries the local FTS5 index.
+- `entry ID` fetches full content directly from Feedbin.
 
-## Reference URLs
+Run `feedbinctl --help` and `feedbinctl <command> --help` before scripting the
+CLI. Commands returning data write JSON to stdout. Index progress is written to
+stderr, leaving the final status line on stdout.
 
-* Saved Searches API → [https://github.com/feedbin/feedbin-api/blob/master/content/saved-searches.md](https://github.com/feedbin/feedbin-api/blob/master/content/saved-searches.md)
-* Feedbin API repo   → [https://github.com/feedbin/feedbin-api](https://github.com/feedbin/feedbin-api)
-* Search‑syntax help → [https://feedbin.com/help/saved-searches/](https://feedbin.com/help/saved-searches/)
+## Behavioral invariants
 
----
+- Never store article `content`, `summary`, or extracted content in SQLite.
+- Accept nullable entry URLs; Feedbin contains real entries without one.
+- Write index pages as they arrive, but advance `entries_cursor` only after the
+  complete paginated request succeeds.
+- Preserve Feedbin's exact `created_at` cursor string.
+- Local pagination is ordered by `(created_at DESC, id DESC)` and anchored by
+  the entry supplied to `--before`.
+- `entries` and `search` must not require credentials or network access.
+- A rebuild must not replace the existing database until the new index is
+  complete.
 
-## Open Tasks
+## Feedbin references
 
-### Subcommands
+- API: <https://github.com/feedbin/feedbin-api>
+- Entries: <https://github.com/feedbin/feedbin-api/blob/master/content/entries.md>
+- Subscriptions: <https://github.com/feedbin/feedbin-api/blob/master/content/subscriptions.md>
 
-| Command                      | Purpose                                                                                                |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `pull`                       | Fetch Saved Searches and tags, emit a complete configuration (`[vars]` + `[[searches]]`).              |
-| `diff`                       | Resolve variables, fetch current Feedbin state, compute & display create / update / delete operations. |
-| `push`                       | Execute the operations from `diff`; supports `--yes` to skip confirmation.                             |
-| `auth login` / `auth logout` | Store / remove token in OS keyring; fall back to `FEEDBIN_TOKEN`.                                      |
+## Verification
 
-### Core Functionality
+Run all of the following and fix every warning or failure:
 
-* Parse / serialise configuration (TOML primary; YAML/JSON optional).
-* Tag‑name → ID resolution **every run** by calling the Tags API.
-* Operation planner that converts Desired vs Actual into API requests.
-
----
-
-## Testing
-
-* **API → In‑Memory**: parse real/fixture JSON responses into internal structs.
-* **In‑Memory → Config**: serialise structs back to a configuration file and assert round‑trip fidelity.
-* **In‑Memory ⟷ In‑Memory diff**: compare two struct sets and verify the list of API operations generated.
-
-Mock HTTP with `wiremock` to keep tests offline.
-
----
-
-## Recommended Crates
-
-| Area         | Crate                            |
-| ------------ | -------------------------------- |
-| CLI parsing  | `clap` (v4)                      |
-| Async HTTP   | `reqwest` + `tokio`              |
-| Config parse | `serde` + `toml_edit`            |
-| Templating   | `handlebars`                     |
-| Credentials  | `keyring`                        |
-| Errors       | `anyhow`, `thiserror`            |
-| Logging      | `tracing` + `tracing_subscriber` |
-| Testing HTTP | `wiremock`                       |
-| XDG paths    | `directories`                    |
-
-## Build
-
-* Always run `cargo fmt --all`, `cargo check`, `cargo build`, `cargo lint` (alias
-  for `cargo clippy -- -D warnings`), and `cargo test`.
-* Fix all warnings and errors until all commands succeed.
+```sh
+cargo fmt --all --check
+cargo check
+cargo build
+cargo lint
+cargo test
+```

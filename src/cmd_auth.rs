@@ -3,6 +3,8 @@ use keyring::Entry;
 use rpassword::prompt_password;
 use std::io::{self, Write};
 
+use crate::api::{FeedbinClient, KEYRING_ACCOUNT, KEYRING_SERVICE};
+
 pub async fn login() -> Result<()> {
     let mut username = String::new();
     print!("Feedbin username: ");
@@ -14,8 +16,13 @@ pub async fn login() -> Result<()> {
 
     let password = prompt_password("Feedbin password: ")?;
 
+    FeedbinClient::with_credentials(username, &password)
+        .validate()
+        .await?;
+
     let credentials = format!("{}:{}", username, password);
-    let entry = Entry::new("feedbinctl", "feedbin").context("failed to open keyring entry")?;
+    let entry =
+        Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).context("failed to open keyring entry")?;
     entry
         .set_password(&credentials)
         .context("failed to store credentials in keyring")?;
@@ -25,7 +32,8 @@ pub async fn login() -> Result<()> {
 }
 
 pub async fn logout() -> Result<()> {
-    let entry = Entry::new("feedbinctl", "feedbin").context("failed to open keyring entry")?;
+    let entry =
+        Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).context("failed to open keyring entry")?;
     match entry.delete_password() {
         Ok(_) => println!("Credentials removed from keyring"),
         Err(err) => println!("No credentials found ({err})"),

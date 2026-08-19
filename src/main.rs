@@ -1,28 +1,23 @@
+mod api;
 mod cli;
 mod cmd_auth;
-mod cmd_diff;
-mod cmd_pull;
-mod cmd_push;
-mod cmd_sync;
-mod config;
-mod config_file;
+mod commands;
+mod database;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{AuthCommands, Cli, Commands};
+use cli::{Cli, Commands};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Pull => cmd_pull::run().await,
-        Commands::Sync => cmd_sync::run().await,
-        Commands::Diff => cmd_diff::run().await,
-        Commands::Push => cmd_push::run().await,
-        Commands::Auth(auth_cmd) => match auth_cmd {
-            AuthCommands::Login => cmd_auth::login().await,
-            AuthCommands::Logout => cmd_auth::logout().await,
-        },
+        Commands::Auth(args) if args.logout => cmd_auth::logout().await,
+        Commands::Auth(_) => cmd_auth::login().await,
+        Commands::Index(args) => commands::index(args).await,
+        Commands::Entries(args) => commands::entries(args),
+        Commands::Search(args) => commands::search(args),
+        Commands::Entry(args) => commands::entry(args).await,
     }
 }
