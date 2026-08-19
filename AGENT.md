@@ -25,6 +25,11 @@ stderr, leaving the final status line on stdout.
 - `entries` and `search` must not require credentials or network access.
 - A rebuild must not replace the existing database until the new index is
   complete.
+- Release and debug builds use separate `feedbin.sqlite` and
+  `feedbin-dev.sqlite` databases beneath
+  `${XDG_DATA_HOME:-~/.local/share}/feedbinctl`.
+- Both build profiles intentionally share the same operating-system keyring
+  entry.
 
 ## Feedbin references
 

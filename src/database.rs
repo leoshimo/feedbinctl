@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use directories::ProjectDirs;
+use directories::BaseDirs;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -23,9 +23,31 @@ pub struct EntrySummary {
 }
 
 pub fn default_path() -> Result<PathBuf> {
-    let dirs = ProjectDirs::from("", "", "feedbinctl")
-        .context("could not determine a data directory for feedbinctl")?;
-    Ok(dirs.data_dir().join("feedbin.sqlite"))
+    let file_name = if cfg!(debug_assertions) {
+        "feedbin-dev.sqlite"
+    } else {
+        "feedbin.sqlite"
+    };
+    Ok(path_for_profile(&xdg_data_home()?, file_name))
+}
+
+fn xdg_data_home() -> Result<PathBuf> {
+    if let Some(value) = std::env::var_os("XDG_DATA_HOME")
+        && !value.is_empty()
+    {
+        let path = PathBuf::from(value);
+        if !path.is_absolute() {
+            bail!("XDG_DATA_HOME must be an absolute path");
+        }
+        return Ok(path);
+    }
+
+    let dirs = BaseDirs::new().context("could not determine the home directory")?;
+    Ok(dirs.home_dir().join(".local").join("share"))
+}
+
+fn path_for_profile(data_home: &Path, file_name: &str) -> PathBuf {
+    data_home.join("feedbinctl").join(file_name)
 }
 
 pub struct Database {
@@ -360,6 +382,19 @@ fn migrate_prototype_schema(connection: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn separates_development_and_production_databases() {
+        let data_home = Path::new("/home/example/.local/share");
+        assert_eq!(
+            path_for_profile(data_home, "feedbin-dev.sqlite"),
+            data_home.join("feedbinctl/feedbin-dev.sqlite")
+        );
+        assert_eq!(
+            path_for_profile(data_home, "feedbin.sqlite"),
+            data_home.join("feedbinctl/feedbin.sqlite")
+        );
+    }
 
     fn subscription() -> Subscription {
         Subscription {

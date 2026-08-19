@@ -36,7 +36,7 @@ pub enum Commands {
 
     /// Incrementally update the local SQLite index
     #[command(
-        long_about = "Fetch Feedbin subscriptions and entries, then update the local SQLite index. The first run fetches the full entry history. Later runs request only entries newer than the last completed run, making this the command to schedule from cron. Pages are written as they arrive, but the cursor advances only after the complete run succeeds. Article bodies are not stored; use `entry ID` to fetch one on demand.",
+        long_about = "Fetch Feedbin subscriptions and entries, then update the local SQLite index. The first run fetches the full entry history. Later runs request only entries newer than the last completed run, making this the command to schedule from cron. Pages are written as they arrive, but the cursor advances only after the complete run succeeds. Article bodies are not stored; use `entry ID` to fetch one on demand.\n\nRelease builds use $XDG_DATA_HOME/feedbinctl/feedbin.sqlite and debug builds use feedbin-dev.sqlite in the same directory. XDG_DATA_HOME defaults to ~/.local/share. Use --database to override the complete path.",
         after_help = "Examples:\n  feedbinctl index\n  feedbinctl index --rebuild\n  feedbinctl index --database ./feedbin.sqlite"
     )]
     Index(IndexArgs),
@@ -76,7 +76,7 @@ pub struct IndexArgs {
     #[arg(long)]
     pub rebuild: bool,
 
-    /// Override the platform data-directory database path
+    /// Override the build-specific XDG database path
     #[arg(long, value_name = "PATH")]
     pub database: Option<PathBuf>,
 }
@@ -91,7 +91,7 @@ pub struct EntriesArgs {
     #[arg(long, default_value_t = 50, value_name = "COUNT")]
     pub limit: usize,
 
-    /// Override the platform data-directory database path
+    /// Override the build-specific XDG database path
     #[arg(long, value_name = "PATH")]
     pub database: Option<PathBuf>,
 }
@@ -106,7 +106,7 @@ pub struct SearchArgs {
     #[arg(long, default_value_t = 20, value_name = "COUNT")]
     pub limit: usize,
 
-    /// Override the platform data-directory database path
+    /// Override the build-specific XDG database path
     #[arg(long, value_name = "PATH")]
     pub database: Option<PathBuf>,
 }
@@ -154,6 +154,8 @@ mod tests {
             .to_string();
         assert!(index.contains("cron"));
         assert!(index.contains("entry ID"));
+        assert!(index.contains("feedbinctl/feedbin.sqlite"));
+        assert!(index.contains("feedbin-dev.sqlite"));
 
         let entries = command
             .find_subcommand_mut("entries")

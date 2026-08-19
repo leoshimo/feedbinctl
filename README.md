@@ -50,12 +50,17 @@ place until the download succeeds:
 feedbinctl index --rebuild
 ```
 
-The default database is in the platform data directory:
+The default database uses an XDG-style data directory and is separated by
+build profile:
 
-- macOS: `~/Library/Application Support/feedbinctl/feedbin.sqlite`
-- Linux: `$XDG_DATA_HOME/feedbinctl/feedbin.sqlite`, falling back to
-  `~/.local/share/feedbinctl/feedbin.sqlite`
-- Windows: the per-user application data directory
+- Installed binaries and `cargo run --release`:
+  `${XDG_DATA_HOME:-~/.local/share}/feedbinctl/feedbin.sqlite`
+- Debug builds such as `cargo run`:
+  `${XDG_DATA_HOME:-~/.local/share}/feedbinctl/feedbin-dev.sqlite`
+
+This keeps development indexing separate from the index used by an installed
+binary. Both profiles continue to use the same operating-system keyring entry.
+`XDG_DATA_HOME`, when set, must be an absolute path.
 
 Use `--database PATH` on `index`, `entries`, or `search` to override it.
 
