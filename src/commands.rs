@@ -192,7 +192,7 @@ pub async fn pages(command: PagesCommand) -> Result<()> {
 async fn pages_add(args: PageAddArgs) -> Result<()> {
     let webpage_client = webpage_client();
     let mut entry = FeedbinClient::from_stored_credentials()?
-        .add_page(&args.url)
+        .add_page(&args.url, args.title.as_deref())
         .await?;
     if let Err(error) = apply_twitter_workarounds(&webpage_client, &mut entry).await {
         eprintln!(

@@ -152,8 +152,8 @@ pub struct SearchArgs {
 pub enum PagesCommand {
     /// Add a URL to Feedbin Pages
     #[command(
-        long_about = "Create a Page through the Feedbin API, print the resulting entry as JSON, and upsert its compact metadata into the local SQLite index. Twitter/X Pages with an unhelpful Feedbin title are given a deterministic local title derived from the saved webpage itself.",
-        after_help = "Example:\n  feedbinctl pages add https://example.com/article"
+        long_about = "Create a Page through the Feedbin API, print the resulting entry as JSON, and upsert its compact metadata into the local SQLite index. --title supplies a fallback when Feedbin cannot discover a title. Twitter/X Pages with an unhelpful Feedbin title are given a deterministic local title derived from the saved webpage itself.",
+        after_help = "Examples:\n  feedbinctl pages add https://example.com/article\n  feedbinctl pages add https://example.com/article --title 'Example article'"
     )]
     Add(PageAddArgs),
 
@@ -176,6 +176,10 @@ pub enum PagesCommand {
 pub struct PageAddArgs {
     /// URL to save to Feedbin Pages
     pub url: String,
+
+    /// Fallback title if Feedbin cannot discover one
+    #[arg(long)]
+    pub title: Option<String>,
 
     /// Override the build-specific XDG database path
     #[arg(long, value_name = "PATH")]
@@ -227,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_nested_pages_commands_without_a_title_option() {
+    fn parses_nested_pages_commands_with_an_optional_title() {
         let cli =
             Cli::try_parse_from(["feedbinctl", "pages", "add", "https://example.com/article"])
                 .unwrap();
@@ -235,18 +239,22 @@ mod tests {
             panic!("expected pages add command");
         };
         assert_eq!(args.url, "https://example.com/article");
+        assert_eq!(args.title, None);
 
-        assert!(
-            Cli::try_parse_from([
-                "feedbinctl",
-                "pages",
-                "add",
-                "https://example.com/article",
-                "--title",
-                "Misleading title",
-            ])
-            .is_err()
-        );
+        let cli = Cli::try_parse_from([
+            "feedbinctl",
+            "pages",
+            "add",
+            "https://example.com/article",
+            "--title",
+            "Example article",
+        ])
+        .unwrap();
+        let Commands::Pages(PagesCommand::Add(args)) = cli.command else {
+            panic!("expected pages add command");
+        };
+        assert_eq!(args.url, "https://example.com/article");
+        assert_eq!(args.title.as_deref(), Some("Example article"));
         assert!(
             Cli::try_parse_from(["feedbinctl", "save", "https://example.com/article"]).is_err()
         );
@@ -353,7 +361,7 @@ mod tests {
             .to_string();
         assert!(pages_add.contains("Feedbin API"));
         assert!(pages_add.contains("local SQLite index"));
-        assert!(!pages_add.contains("--title"));
+        assert!(pages_add.contains("--title"));
     }
 
     #[test]

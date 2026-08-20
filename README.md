@@ -146,13 +146,15 @@ feedbinctl entry 5154510253
 
 ```sh
 feedbinctl pages add https://example.com/article
+feedbinctl pages add https://example.com/article --title 'Example article'
 feedbinctl pages list --limit 50
 feedbinctl pages list --limit 50 --before 5154510253
 feedbinctl pages remove 5154510253
 ```
 
 `pages add` creates a remote Feedbin Page, prints the resulting entry as JSON,
-and immediately upserts its compact metadata into SQLite. `pages remove`
+and immediately upserts its compact metadata into SQLite. Its optional `--title`
+is used as a fallback when Feedbin cannot discover one. `pages remove`
 deletes the remote Page first and then removes its entry ID from SQLite if the
 local index exists. A later `index` can safely encounter an entry added through
 `pages add`: entries are keyed by Feedbin ID and updated rather than duplicated.

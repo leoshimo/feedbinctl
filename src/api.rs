@@ -67,6 +67,8 @@ pub struct SavedSearchEntryPage {
 #[derive(Serialize)]
 struct NewPage<'a> {
     url: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<&'a str>,
 }
 
 impl FeedbinClient {
@@ -172,11 +174,11 @@ impl FeedbinClient {
             .with_context(|| format!("failed to decode entry {id}"))
     }
 
-    pub async fn add_page(&self, url: &str) -> Result<FeedEntry> {
+    pub async fn add_page(&self, url: &str, title: Option<&str>) -> Result<FeedEntry> {
         self.authenticated(
             self.client
                 .post(format!("{}/pages.json", self.base_url))
-                .json(&NewPage { url }),
+                .json(&NewPage { url, title }),
         )
         .send()
         .await?
@@ -441,11 +443,43 @@ mod tests {
 
         let client = FeedbinClient::with_base_url("user", "pass", server.uri());
         let entry = client
-            .add_page("https://example.com/article")
+            .add_page("https://example.com/article", None)
             .await
             .unwrap();
         assert_eq!(entry.id, 10);
         assert_eq!(entry.feed_id, 20);
+    }
+
+    #[tokio::test]
+    async fn adds_a_page_with_a_fallback_title() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/pages.json"))
+            .and(basic_auth("user", "pass"))
+            .and(body_json(serde_json::json!({
+                "url": "https://example.com/article",
+                "title": "Example article"
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 10,
+                "feed_id": 20,
+                "title": "Example article",
+                "author": null,
+                "summary": null,
+                "content": "<p>Article</p>",
+                "url": "https://example.com/article",
+                "extracted_content_url": null,
+                "published": "2026-09-03T12:00:00Z",
+                "created_at": "2026-09-03T12:01:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let entry = FeedbinClient::with_base_url("user", "pass", server.uri())
+            .add_page("https://example.com/article", Some("Example article"))
+            .await
+            .unwrap();
+        assert_eq!(entry.title.as_deref(), Some("Example article"));
     }
 
     #[tokio::test]
