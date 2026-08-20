@@ -1,10 +1,15 @@
 use anyhow::{Context, Result, bail};
+use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::api::{FeedbinClient, SavedSearch};
-use crate::cli::{CollectionsArgs, EntriesArgs, EntryArgs, IndexArgs, SaveArgs, SearchArgs};
+use crate::api::{FeedEntry, FeedbinClient, PAGE_SIZE, SavedSearch, Subscription};
+use crate::cli::{
+    CollectionsArgs, EntriesArgs, EntryArgs, IndexArgs, PageAddArgs, PageListArgs, PageRemoveArgs,
+    PagesCommand, SearchArgs,
+};
 use crate::database::{Database, default_path};
+use crate::twitter::{apply_twitter_workarounds, webpage_client};
 
 pub async fn index(args: IndexArgs) -> Result<()> {
     let destination = args.database.unwrap_or(default_path()?);
@@ -21,8 +26,14 @@ pub async fn index(args: IndexArgs) -> Result<()> {
         database.cursor()?
     };
     let client = FeedbinClient::from_stored_credentials()?;
+    let webpage_client = webpage_client();
 
     let subscriptions = client.subscriptions().await?;
+    let pages_feed_ids = subscriptions
+        .iter()
+        .filter(|subscription| is_pages_subscription(subscription))
+        .map(|subscription| subscription.feed_id)
+        .collect::<HashSet<_>>();
     database.store_feeds(&subscriptions)?;
     let saved_searches = client.saved_searches().await?;
 
@@ -34,7 +45,7 @@ pub async fn index(args: IndexArgs) -> Result<()> {
     let mut expected_total = None;
 
     loop {
-        let page = client
+        let mut page = client
             .entries_page(next.as_deref(), since.as_deref())
             .await?;
         if !reported_total {
@@ -46,7 +57,15 @@ pub async fn index(args: IndexArgs) -> Result<()> {
             reported_total = true;
         }
 
-        for entry in &page.entries {
+        for entry in &mut page.entries {
+            if pages_feed_ids.contains(&entry.feed_id)
+                && let Err(error) = apply_twitter_workarounds(&webpage_client, entry).await
+            {
+                eprintln!(
+                    "Warning: could not improve Twitter/X Page {}: {error:#}",
+                    entry.id
+                );
+            }
             entry_ids.insert(entry.id);
             if newest_cursor
                 .as_ref()
@@ -162,14 +181,140 @@ pub fn search(args: SearchArgs) -> Result<()> {
     Ok(())
 }
 
-pub async fn save(args: SaveArgs) -> Result<()> {
-    let entry = FeedbinClient::from_stored_credentials()?
-        .save_page(&args.url, args.title.as_deref())
+pub async fn pages(command: PagesCommand) -> Result<()> {
+    match command {
+        PagesCommand::Add(args) => pages_add(args).await,
+        PagesCommand::Remove(args) => pages_remove(args).await,
+        PagesCommand::List(args) => pages_list(args).await,
+    }
+}
+
+async fn pages_add(args: PageAddArgs) -> Result<()> {
+    let webpage_client = webpage_client();
+    let mut entry = FeedbinClient::from_stored_credentials()?
+        .add_page(&args.url)
         .await?;
+    if let Err(error) = apply_twitter_workarounds(&webpage_client, &mut entry).await {
+        eprintln!(
+            "Warning: could not improve Twitter/X Page {}: {error:#}",
+            entry.id
+        );
+    }
     let path = args.database.unwrap_or(default_path()?);
     Database::open(&path)?.store_entries(std::slice::from_ref(&entry))?;
     println!("{}", serde_json::to_string_pretty(&entry)?);
     Ok(())
+}
+
+async fn pages_remove(args: PageRemoveArgs) -> Result<()> {
+    FeedbinClient::from_stored_credentials()?
+        .remove_page(args.id)
+        .await?;
+
+    let path = args.database.unwrap_or(default_path()?);
+    if path.exists() {
+        Database::open(&path)?.remove_entry(args.id)?;
+    }
+    println!("{}", serde_json::json!({ "removed": args.id }));
+    Ok(())
+}
+
+async fn pages_list(args: PageListArgs) -> Result<()> {
+    if args.limit == 0 {
+        println!("[]");
+        return Ok(());
+    }
+
+    let client = FeedbinClient::from_stored_credentials()?;
+    let subscriptions = client.subscriptions().await?;
+    let Some(subscription) = subscriptions
+        .iter()
+        .find(|subscription| is_pages_subscription(subscription))
+    else {
+        println!("[]");
+        return Ok(());
+    };
+
+    let mut entries = Vec::with_capacity(args.limit);
+    let mut next = None;
+    let mut cursor = args.before;
+    while entries.len() < args.limit {
+        let remaining = args.limit - entries.len();
+        let request_size = if cursor.is_some() {
+            PAGE_SIZE
+        } else {
+            remaining
+        };
+        let page = client
+            .feed_entries_page(subscription.feed_id, next.as_deref(), request_size)
+            .await?;
+        append_page_entries(&mut entries, page.entries, &mut cursor, args.limit);
+        next = page.next;
+        if next.is_none() {
+            break;
+        }
+    }
+
+    if let Some(before) = cursor {
+        anyhow::bail!("Feedbin Page entry {before} was not found");
+    }
+
+    let entries = entries.iter().map(PageSummary::from).collect::<Vec<_>>();
+    println!("{}", serde_json::to_string_pretty(&entries)?);
+    Ok(())
+}
+
+fn append_page_entries(
+    output: &mut Vec<FeedEntry>,
+    page: Vec<FeedEntry>,
+    cursor: &mut Option<i64>,
+    limit: usize,
+) {
+    for entry in page {
+        if let Some(before) = *cursor {
+            if entry.id == before {
+                *cursor = None;
+            }
+            continue;
+        }
+        output.push(entry);
+        if output.len() == limit {
+            break;
+        }
+    }
+}
+
+fn is_pages_subscription(subscription: &Subscription) -> bool {
+    subscription.title == "Pages"
+        || subscription
+            .feed_url
+            .starts_with("http://pages.feedbinusercontent.com/")
+        || subscription
+            .feed_url
+            .starts_with("https://pages.feedbinusercontent.com/")
+}
+
+#[derive(Serialize)]
+struct PageSummary<'a> {
+    id: i64,
+    title: &'a Option<String>,
+    url: &'a Option<String>,
+    author: &'a Option<String>,
+    published: &'a str,
+    created_at: &'a str,
+}
+
+impl<'a> From<&'a FeedEntry> for PageSummary<'a> {
+    fn from(entry: &'a FeedEntry) -> Self {
+        Self {
+            id: entry.id,
+            title: &entry.title,
+            url: &entry.url,
+            author: &entry.author,
+            published: &entry.published,
+            created_at: &entry.created_at,
+        }
+    }
 }
 
 pub async fn entry(args: EntryArgs) -> Result<()> {
@@ -255,6 +400,21 @@ fn sidecar(path: &Path, suffix: &str) -> PathBuf {
 mod tests {
     use super::*;
 
+    fn entry(id: i64) -> FeedEntry {
+        FeedEntry {
+            id,
+            feed_id: 1,
+            title: Some(format!("Entry {id}")),
+            author: None,
+            summary: None,
+            content: None,
+            url: Some(format!("https://example.com/{id}")),
+            extracted_content_url: None,
+            published: "2026-09-03T12:00:00Z".to_string(),
+            created_at: "2026-09-03T12:00:00Z".to_string(),
+        }
+    }
+
     #[test]
     fn rebuild_uses_sibling_files() {
         let destination = Path::new("/tmp/example/feedbin.sqlite");
@@ -273,5 +433,25 @@ mod tests {
     fn pagination_rejects_an_incomplete_unique_set() {
         let error = validate_entry_count(Some(100), 99, 100).unwrap_err();
         assert!(error.to_string().contains("99 unique entries"));
+    }
+
+    #[test]
+    fn remote_page_cursor_skips_through_the_matching_entry() {
+        let mut output = Vec::new();
+        let mut cursor = Some(3);
+
+        append_page_entries(&mut output, vec![entry(5), entry(4)], &mut cursor, 2);
+        append_page_entries(
+            &mut output,
+            vec![entry(3), entry(2), entry(1)],
+            &mut cursor,
+            2,
+        );
+
+        assert_eq!(cursor, None);
+        assert_eq!(
+            output.iter().map(|entry| entry.id).collect::<Vec<_>>(),
+            [2, 1]
+        );
     }
 }

@@ -11,7 +11,9 @@ const TOP_LEVEL_EXAMPLES: &str = r#"Examples:
   feedbinctl entries --collection feed:42
   feedbinctl search 'distributed systems'
   feedbinctl search emacs --collection saved-search:7
-  feedbinctl save https://example.com/article --title 'Example article'
+  feedbinctl pages add https://example.com/article
+  feedbinctl pages list
+  feedbinctl pages remove 5154510253
   feedbinctl entry 5154510253
 
 Run `feedbinctl <command> --help` for command-specific examples."#;
@@ -68,12 +70,12 @@ pub enum Commands {
     )]
     Search(SearchArgs),
 
-    /// Save a URL to Feedbin Pages for reading later
+    /// Add, remove, or list Feedbin Pages
     #[command(
-        long_about = "Create a Feedbin Page from a URL, print the resulting entry as JSON, and add its compact metadata to the local SQLite index immediately. Feedbin will discover the page title when possible; --title supplies a fallback. This command requires network access.",
-        after_help = "Examples:\n  feedbinctl save https://example.com/article\n  feedbinctl save https://example.com/article --title 'Example article'"
+        subcommand,
+        long_about = "Manage Feedbin's remote Pages collection. These commands require network access. `pages add` and `pages remove` also update the local SQLite index after the Feedbin operation succeeds; `pages list` always reads the authoritative collection from Feedbin."
     )]
-    Save(SaveArgs),
+    Pages(PagesCommand),
 
     /// Fetch one complete entry directly from Feedbin
     #[command(
@@ -146,18 +148,59 @@ pub struct SearchArgs {
     pub database: Option<PathBuf>,
 }
 
+#[derive(Subcommand, Debug)]
+pub enum PagesCommand {
+    /// Add a URL to Feedbin Pages
+    #[command(
+        long_about = "Create a Page through the Feedbin API, print the resulting entry as JSON, and upsert its compact metadata into the local SQLite index. Twitter/X Pages with an unhelpful Feedbin title are given a deterministic local title derived from the saved webpage itself.",
+        after_help = "Example:\n  feedbinctl pages add https://example.com/article"
+    )]
+    Add(PageAddArgs),
+
+    /// Remove an entry from Feedbin Pages
+    #[command(
+        long_about = "Delete a Page through the Feedbin API, then remove the same entry ID from the local SQLite index if that index exists. The entry ID is returned by `pages add` and `pages list`.",
+        after_help = "Example:\n  feedbinctl pages remove 5154510253"
+    )]
+    Remove(PageRemoveArgs),
+
+    /// List the most recent Feedbin Pages
+    #[command(
+        long_about = "Fetch entries from the authoritative remote Feedbin Pages collection and print compact JSON metadata. Results are newest first. Use the ID of the final result with --before to retrieve the next page. This command does not read or update SQLite; use `entries --collection feed:ID` for the offline indexed view.",
+        after_help = "Examples:\n  feedbinctl pages list\n  feedbinctl pages list --limit 100\n  feedbinctl pages list --limit 50 --before 5154510253"
+    )]
+    List(PageListArgs),
+}
+
 #[derive(Args, Debug)]
-pub struct SaveArgs {
+pub struct PageAddArgs {
     /// URL to save to Feedbin Pages
     pub url: String,
-
-    /// Fallback title if Feedbin cannot discover one
-    #[arg(long)]
-    pub title: Option<String>,
 
     /// Override the build-specific XDG database path
     #[arg(long, value_name = "PATH")]
     pub database: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct PageRemoveArgs {
+    /// Feedbin Page entry ID
+    pub id: i64,
+
+    /// Override the build-specific XDG database path
+    #[arg(long, value_name = "PATH")]
+    pub database: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct PageListArgs {
+    /// Maximum number of Pages to return
+    #[arg(long, default_value_t = 50, value_name = "COUNT")]
+    pub limit: usize,
+
+    /// Return Pages older than this entry ID
+    #[arg(long, value_name = "ENTRY_ID")]
+    pub before: Option<i64>,
 }
 
 #[derive(Args, Debug)]
@@ -184,6 +227,48 @@ mod tests {
     }
 
     #[test]
+    fn parses_nested_pages_commands_without_a_title_option() {
+        let cli =
+            Cli::try_parse_from(["feedbinctl", "pages", "add", "https://example.com/article"])
+                .unwrap();
+        let Commands::Pages(PagesCommand::Add(args)) = cli.command else {
+            panic!("expected pages add command");
+        };
+        assert_eq!(args.url, "https://example.com/article");
+
+        assert!(
+            Cli::try_parse_from([
+                "feedbinctl",
+                "pages",
+                "add",
+                "https://example.com/article",
+                "--title",
+                "Misleading title",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["feedbinctl", "save", "https://example.com/article"]).is_err()
+        );
+
+        let cli = Cli::try_parse_from([
+            "feedbinctl",
+            "pages",
+            "list",
+            "--limit",
+            "25",
+            "--before",
+            "42",
+        ])
+        .unwrap();
+        let Commands::Pages(PagesCommand::List(args)) = cli.command else {
+            panic!("expected pages list command");
+        };
+        assert_eq!(args.limit, 25);
+        assert_eq!(args.before, Some(42));
+    }
+
+    #[test]
     fn long_help_describes_agent_discoverable_workflow() {
         let help = Cli::command().render_long_help().to_string();
         for command in [
@@ -192,7 +277,7 @@ mod tests {
             "collections",
             "entries",
             "search",
-            "save",
+            "pages",
             "entry",
         ] {
             assert!(help.contains(command), "missing {command} from help");
@@ -228,6 +313,14 @@ mod tests {
             .unwrap()
             .render_long_help()
             .to_string();
+
+        let pages = command
+            .find_subcommand_mut("pages")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(pages.contains("remote Pages"));
+        assert!(pages.contains("pages list"));
         assert!(collections.contains("Pages"));
 
         let search = command
@@ -251,14 +344,16 @@ mod tests {
             assert!(search.contains(syntax), "missing {syntax} from search help");
         }
 
-        let save = command
-            .find_subcommand_mut("save")
+        let pages_add = command
+            .find_subcommand_mut("pages")
+            .unwrap()
+            .find_subcommand_mut("add")
             .unwrap()
             .render_long_help()
             .to_string();
-        assert!(save.contains("Feedbin Page"));
-        assert!(save.contains("local SQLite index"));
-        assert!(save.contains("feedbinctl save"));
+        assert!(pages_add.contains("Feedbin API"));
+        assert!(pages_add.contains("local SQLite index"));
+        assert!(!pages_add.contains("--title"));
     }
 
     #[test]

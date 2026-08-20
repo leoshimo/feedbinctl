@@ -5,7 +5,7 @@ use reqwest::{Client, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
 
 const API_BASE: &str = "https://api.feedbin.com/v2";
-const PAGE_SIZE: usize = 100;
+pub(crate) const PAGE_SIZE: usize = 100;
 const RECORD_COUNT: &str = "x-feedbin-record-count";
 
 pub(crate) const KEYRING_SERVICE: &str = "feedbinctl";
@@ -67,8 +67,6 @@ pub struct SavedSearchEntryPage {
 #[derive(Serialize)]
 struct NewPage<'a> {
     url: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    title: Option<&'a str>,
 }
 
 impl FeedbinClient {
@@ -174,11 +172,11 @@ impl FeedbinClient {
             .with_context(|| format!("failed to decode entry {id}"))
     }
 
-    pub async fn save_page(&self, url: &str, title: Option<&str>) -> Result<FeedEntry> {
+    pub async fn add_page(&self, url: &str) -> Result<FeedEntry> {
         self.authenticated(
             self.client
                 .post(format!("{}/pages.json", self.base_url))
-                .json(&NewPage { url, title }),
+                .json(&NewPage { url }),
         )
         .send()
         .await?
@@ -186,6 +184,48 @@ impl FeedbinClient {
         .json()
         .await
         .with_context(|| format!("failed to decode saved page {url}"))
+    }
+
+    pub async fn remove_page(&self, id: i64) -> Result<()> {
+        self.authenticated(
+            self.client
+                .delete(format!("{}/pages/{id}.json", self.base_url)),
+        )
+        .send()
+        .await?
+        .error_for_status()
+        .with_context(|| format!("failed to remove Feedbin Page {id}"))?;
+        Ok(())
+    }
+
+    pub async fn feed_entries_page(
+        &self,
+        feed_id: i64,
+        next: Option<&str>,
+        per_page: usize,
+    ) -> Result<EntryPage> {
+        let request = if let Some(url) = next {
+            if !url.starts_with(&format!("{}/", self.base_url)) {
+                bail!("Feedbin returned an unexpected pagination URL: {url}");
+            }
+            self.authenticated(self.client.get(url))
+        } else {
+            self.get(&format!("/feeds/{feed_id}/entries.json"))
+                .query(&[("per_page", per_page.min(PAGE_SIZE))])
+        };
+
+        let response = request.send().await?.error_for_status()?;
+        let next = next_link(response.headers());
+        let total = record_count(response.headers());
+        let entries = response
+            .json()
+            .await
+            .with_context(|| format!("failed to decode entries for feed {feed_id}"))?;
+        Ok(EntryPage {
+            entries,
+            next,
+            total,
+        })
     }
 
     pub async fn entries_page(&self, next: Option<&str>, since: Option<&str>) -> Result<EntryPage> {
@@ -376,14 +416,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn saves_a_page_with_an_optional_title() {
+    async fn adds_a_page() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/pages.json"))
             .and(basic_auth("user", "pass"))
             .and(body_json(serde_json::json!({
-                "url": "https://example.com/article",
-                "title": "Example article"
+                "url": "https://example.com/article"
             })))
             .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
                 "id": 10,
@@ -402,10 +441,58 @@ mod tests {
 
         let client = FeedbinClient::with_base_url("user", "pass", server.uri());
         let entry = client
-            .save_page("https://example.com/article", Some("Example article"))
+            .add_page("https://example.com/article")
             .await
             .unwrap();
         assert_eq!(entry.id, 10);
         assert_eq!(entry.feed_id, 20);
+    }
+
+    #[tokio::test]
+    async fn removes_a_page_by_entry_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/pages/10.json"))
+            .and(basic_auth("user", "pass"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        FeedbinClient::with_base_url("user", "pass", server.uri())
+            .remove_page(10)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn lists_entries_for_a_feed() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/feeds/20/entries.json"))
+            .and(query_param("per_page", "25"))
+            .and(basic_auth("user", "pass"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "id": 10,
+                    "feed_id": 20,
+                    "title": "Example article",
+                    "author": null,
+                    "summary": null,
+                    "content": "<p>Article</p>",
+                    "url": "https://example.com/article",
+                    "extracted_content_url": null,
+                    "published": "2026-09-03T12:00:00Z",
+                    "created_at": "2026-09-03T12:01:00Z"
+                }])),
+            )
+            .mount(&server)
+            .await;
+
+        let page = FeedbinClient::with_base_url("user", "pass", server.uri())
+            .feed_entries_page(20, None, 25)
+            .await
+            .unwrap();
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].id, 10);
     }
 }

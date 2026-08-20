@@ -1,6 +1,6 @@
 [package]
 name = "feedbinctl"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "Index and search Feedbin entries from the command line"
 license = "MIT"
@@ -12,6 +12,7 @@ categories = ["command-line-utilities"]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 directories = "5"
+html-escape = "0.2"
 keyring = "2"
 reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
 rpassword = "7"

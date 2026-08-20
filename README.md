@@ -63,8 +63,8 @@ This keeps development indexing separate from the index used by an installed
 binary. Both profiles continue to use the same operating-system keyring entry.
 `XDG_DATA_HOME`, when set, must be an absolute path.
 
-Use `--database PATH` on `index`, `collections`, `entries`, `search`, or `save`
-to override it.
+Use `--database PATH` on `index`, `collections`, `entries`, `search`,
+`pages add`, or `pages remove` to override it.
 
 ## List collections
 
@@ -142,17 +142,31 @@ feedbinctl entry 5154510253
 `entry` contacts Feedbin and prints the complete current object, including
 `summary`, `content`, and `extracted_content_url`.
 
-## Save a page for later
+## Manage Feedbin Pages
 
 ```sh
-feedbinctl save https://example.com/article
-feedbinctl save https://example.com/article --title "Example article"
+feedbinctl pages add https://example.com/article
+feedbinctl pages list --limit 50
+feedbinctl pages list --limit 50 --before 5154510253
+feedbinctl pages remove 5154510253
 ```
 
-`save` creates a Feedbin Page and prints the resulting entry as JSON. The title
-is optional and is only used when Feedbin cannot discover one. The compact
-entry is also written to the local index immediately; saved-search membership
-is refreshed by the next `index` run.
+`pages add` creates a remote Feedbin Page, prints the resulting entry as JSON,
+and immediately upserts its compact metadata into SQLite. `pages remove`
+deletes the remote Page first and then removes its entry ID from SQLite if the
+local index exists. A later `index` can safely encounter an entry added through
+`pages add`: entries are keyed by Feedbin ID and updated rather than duplicated.
+
+`pages list` always contacts Feedbin and returns compact metadata from the
+authoritative remote Pages feed. It does not read or update SQLite. For an
+offline view, select the Pages feed with `entries --collection feed:ID`. To
+browse the next remote page, pass the final result's ID to `--before`.
+
+For Twitter/X status URLs with an empty, generic, or JavaScript-disabled title,
+`pages add` and `index` derive a deterministic local title from the saved
+webpage's `<title>`, in the form `Display Name (@handle): post text`. This is a
+best-effort local correction: Feedbin's remote title is unchanged, and a page
+fetch or parse failure does not prevent the Feedbin operation or index run.
 
 Every command documents its behavior and examples through Clap:
 
@@ -162,6 +176,9 @@ feedbinctl index --help
 feedbinctl collections --help
 feedbinctl entries --help
 feedbinctl search --help
-feedbinctl save --help
+feedbinctl pages --help
+feedbinctl pages add --help
+feedbinctl pages list --help
+feedbinctl pages remove --help
 feedbinctl entry --help
 ```

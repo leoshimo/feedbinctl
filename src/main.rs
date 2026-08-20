@@ -3,6 +3,7 @@ mod cli;
 mod cmd_auth;
 mod commands;
 mod database;
+mod twitter;
 
 use anyhow::Result;
 use clap::Parser;
@@ -19,7 +20,7 @@ async fn main() -> Result<()> {
         Commands::Collections(args) => commands::collections(args),
         Commands::Entries(args) => commands::entries(args),
         Commands::Search(args) => commands::search(args),
-        Commands::Save(args) => commands::save(args).await,
+        Commands::Pages(command) => commands::pages(command).await,
         Commands::Entry(args) => commands::entry(args).await,
     }
 }

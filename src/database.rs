@@ -190,6 +190,14 @@ impl Database {
         Ok(())
     }
 
+    pub fn remove_entry(&mut self, id: i64) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute("DELETE FROM saved_search_entries WHERE entry_id = ?1", [id])?;
+        transaction.execute("DELETE FROM entries WHERE id = ?1", [id])?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn set_cursor(&self, cursor: &str) -> Result<()> {
         self.connection.execute(
             r#"
@@ -765,6 +773,42 @@ mod tests {
 
         assert_eq!(database.entries(1, None, &[]).unwrap()[0].id, 2);
         assert_eq!(database.entries(1, Some(2), &[]).unwrap()[0].id, 1);
+    }
+
+    #[test]
+    fn removing_an_entry_updates_the_index() {
+        let mut database = in_memory_database();
+        database
+            .store_feeds(&[subscription(2, "Example Feed")])
+            .unwrap();
+        database
+            .store_entries(&[entry(1, 2, "2026-01-03T00:00:00Z", "Distributed soup")])
+            .unwrap();
+
+        database.remove_entry(1).unwrap();
+
+        assert!(database.entries(10, None, &[]).unwrap().is_empty());
+        assert!(database.search("distributed", 10, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn storing_the_same_entry_updates_instead_of_duplicating() {
+        let mut database = in_memory_database();
+        database
+            .store_feeds(&[subscription(2, "Example Feed")])
+            .unwrap();
+        database
+            .store_entries(&[entry(1, 2, "2026-01-03T00:00:00Z", "Old title")])
+            .unwrap();
+        database
+            .store_entries(&[entry(1, 2, "2026-01-03T00:00:00Z", "New title")])
+            .unwrap();
+
+        let entries = database.entries(10, None, &[]).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].title.as_deref(), Some("New title"));
+        assert!(database.search("old", 10, &[]).unwrap().is_empty());
+        assert_eq!(database.search("new", 10, &[]).unwrap().len(), 1);
     }
 
     #[test]
