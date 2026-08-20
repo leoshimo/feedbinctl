@@ -1,12 +1,58 @@
 use anyhow::{Context, Result, bail};
 use directories::BaseDirs;
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{
+    Connection, OptionalExtension, Transaction, params, params_from_iter, types::Value,
+};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
-use crate::api::{FeedEntry, Subscription};
+use crate::api::{FeedEntry, SavedSearch, Subscription};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollectionSelector {
+    Feed(i64),
+    SavedSearch(i64),
+}
+
+impl FromStr for CollectionSelector {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        let (kind, id) = value
+            .split_once(':')
+            .ok_or_else(|| "expected feed:ID or saved-search:ID".to_string())?;
+        let id = id
+            .parse::<i64>()
+            .map_err(|_| format!("invalid collection ID in {value:?}"))?;
+        if id <= 0 {
+            return Err("collection ID must be positive".to_string());
+        }
+        match kind {
+            "feed" => Ok(Self::Feed(id)),
+            "saved-search" => Ok(Self::SavedSearch(id)),
+            _ => Err("collection kind must be `feed` or `saved-search`".to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CollectionSummary {
+    Feed {
+        id: i64,
+        name: String,
+        feed_url: String,
+        site_url: String,
+    },
+    SavedSearch {
+        id: i64,
+        name: String,
+        query: String,
+    },
+}
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct EntrySummary {
@@ -80,6 +126,7 @@ impl Database {
 
     pub fn store_feeds(&mut self, subscriptions: &[Subscription]) -> Result<()> {
         let transaction = self.connection.transaction()?;
+        transaction.execute("DELETE FROM feeds", [])?;
         for subscription in subscriptions {
             transaction.execute(
                 r#"
@@ -114,6 +161,26 @@ impl Database {
         Ok(())
     }
 
+    pub fn store_saved_searches(&mut self, searches: &[(SavedSearch, Vec<i64>)]) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute("DELETE FROM saved_search_entries", [])?;
+        transaction.execute("DELETE FROM saved_searches", [])?;
+        for (search, entry_ids) in searches {
+            transaction.execute(
+                "INSERT INTO saved_searches (id, name, query) VALUES (?1, ?2, ?3)",
+                params![search.id, search.name, search.query],
+            )?;
+            for (position, entry_id) in entry_ids.iter().enumerate() {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO saved_search_entries (saved_search_id, entry_id, position) VALUES (?1, ?2, ?3)",
+                    params![search.id, entry_id, position as i64],
+                )?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn store_entries(&mut self, entries: &[FeedEntry]) -> Result<()> {
         let transaction = self.connection.transaction()?;
         for entry in entries {
@@ -134,39 +201,122 @@ impl Database {
         Ok(())
     }
 
-    pub fn entries(&self, limit: usize, before: Option<i64>) -> Result<Vec<EntrySummary>> {
+    pub fn collections(&self) -> Result<Vec<CollectionSummary>> {
+        let mut collections = Vec::new();
+        let mut feeds = self.connection.prepare(
+            "SELECT feed_id, title, feed_url, site_url FROM feeds ORDER BY title COLLATE NOCASE, feed_id",
+        )?;
+        let mut rows = feeds.query([])?;
+        while let Some(row) = rows.next()? {
+            collections.push(CollectionSummary::Feed {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                feed_url: row.get(2)?,
+                site_url: row.get(3)?,
+            });
+        }
+        drop(rows);
+        drop(feeds);
+
+        let mut searches = self.connection.prepare(
+            "SELECT id, name, query FROM saved_searches ORDER BY name COLLATE NOCASE, id",
+        )?;
+        let mut rows = searches.query([])?;
+        while let Some(row) = rows.next()? {
+            collections.push(CollectionSummary::SavedSearch {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                query: row.get(2)?,
+            });
+        }
+        Ok(collections)
+    }
+
+    pub fn entries(
+        &self,
+        limit: usize,
+        before: Option<i64>,
+        collections: &[CollectionSelector],
+    ) -> Result<Vec<EntrySummary>> {
+        self.validate_collections(collections)?;
         if limit == 0 {
             return Ok(vec![]);
         }
 
         if let Some(before) = before {
+            let (filter, filter_values) = collection_predicate(collections, 2);
+            let mut anchor_query =
+                "SELECT e.created_at, e.id FROM entries e WHERE e.id = ?1".to_string();
+            if let Some(filter) = filter {
+                anchor_query.push_str(" AND (");
+                anchor_query.push_str(&filter);
+                anchor_query.push(')');
+            }
+            let mut anchor_values = vec![Value::Integer(before)];
+            anchor_values.extend(filter_values);
             let anchor: Option<(String, i64)> = self
                 .connection
-                .query_row(
-                    "SELECT created_at, id FROM entries WHERE id = ?1",
-                    [before],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
+                .query_row(&anchor_query, params_from_iter(anchor_values), |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
                 .optional()?;
-            let (created_at, id) = anchor
-                .with_context(|| format!("entry {before} is not present in the local index"))?;
-            let mut statement = self.connection.prepare(&format!(
-                "{} WHERE e.created_at < ?1 OR (e.created_at = ?1 AND e.id < ?2) ORDER BY e.created_at DESC, e.id DESC LIMIT ?3",
+            let (created_at, id) = anchor.with_context(|| {
+                if collections.is_empty() {
+                    format!("entry {before} is not present in the local index")
+                } else {
+                    format!("entry {before} is not present in the selected collections")
+                }
+            })?;
+
+            let (filter, filter_values) = collection_predicate(collections, 3);
+            let mut query = format!(
+                "{} WHERE (e.created_at < ?1 OR (e.created_at = ?1 AND e.id < ?2))",
                 summary_select()
-            ))?;
-            let mut rows = statement.query(params![created_at, id, limit as i64])?;
+            );
+            if let Some(filter) = filter {
+                query.push_str(" AND (");
+                query.push_str(&filter);
+                query.push(')');
+            }
+            let limit_parameter = 3 + filter_values.len();
+            query.push_str(&format!(
+                " ORDER BY e.created_at DESC, e.id DESC LIMIT ?{limit_parameter}"
+            ));
+            let mut values = vec![Value::Text(created_at), Value::Integer(id)];
+            values.extend(filter_values);
+            values.push(Value::Integer(limit as i64));
+
+            let mut statement = self.connection.prepare(&query)?;
+            let mut rows = statement.query(params_from_iter(values))?;
             collect_summaries(&mut rows)
         } else {
-            let mut statement = self.connection.prepare(&format!(
-                "{} ORDER BY e.created_at DESC, e.id DESC LIMIT ?1",
-                summary_select()
-            ))?;
-            let mut rows = statement.query([limit as i64])?;
+            let (filter, filter_values) = collection_predicate(collections, 1);
+            let mut query = summary_select().to_string();
+            if let Some(filter) = filter {
+                query.push_str(" WHERE (");
+                query.push_str(&filter);
+                query.push(')');
+            }
+            let limit_parameter = 1 + filter_values.len();
+            query.push_str(&format!(
+                " ORDER BY e.created_at DESC, e.id DESC LIMIT ?{limit_parameter}"
+            ));
+            let mut values = filter_values;
+            values.push(Value::Integer(limit as i64));
+
+            let mut statement = self.connection.prepare(&query)?;
+            let mut rows = statement.query(params_from_iter(values))?;
             collect_summaries(&mut rows)
         }
     }
 
-    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<EntrySummary>> {
+    pub fn search(
+        &self,
+        query: &str,
+        limit: usize,
+        collections: &[CollectionSelector],
+    ) -> Result<Vec<EntrySummary>> {
+        self.validate_collections(collections)?;
         if limit == 0 {
             return Ok(vec![]);
         }
@@ -174,8 +324,8 @@ impl Database {
             bail!("search query must not be empty");
         }
 
-        let mut statement = self.connection.prepare(
-            r#"
+        let (filter, filter_values) = collection_predicate(collections, 2);
+        let mut sql = r#"
             SELECT
                 e.id, e.feed_id, e.title, e.url, e.author, e.feed_title,
                 f.feed_url, f.site_url, e.published, e.created_at
@@ -183,12 +333,53 @@ impl Database {
             JOIN entries e ON e.id = entries_fts.rowid
             LEFT JOIN feeds f ON f.feed_id = e.feed_id
             WHERE entries_fts MATCH ?1
-            ORDER BY bm25(entries_fts), e.created_at DESC, e.id DESC
-            LIMIT ?2
-            "#,
-        )?;
-        let mut rows = statement.query(params![query, limit as i64])?;
+            "#
+        .to_string();
+        if let Some(filter) = filter {
+            sql.push_str(" AND (");
+            sql.push_str(&filter);
+            sql.push(')');
+        }
+        let limit_parameter = 2 + filter_values.len();
+        sql.push_str(&format!(
+            " ORDER BY bm25(entries_fts), e.created_at DESC, e.id DESC LIMIT ?{limit_parameter}"
+        ));
+        let mut values = vec![Value::Text(query.to_string())];
+        values.extend(filter_values);
+        values.push(Value::Integer(limit as i64));
+
+        let mut statement = self.connection.prepare(&sql)?;
+        let mut rows = statement.query(params_from_iter(values))?;
         collect_summaries(&mut rows)
+    }
+
+    fn validate_collections(&self, collections: &[CollectionSelector]) -> Result<()> {
+        for collection in collections {
+            let present = match collection {
+                CollectionSelector::Feed(id) => self
+                    .connection
+                    .query_row("SELECT 1 FROM feeds WHERE feed_id = ?1", [id], |_| Ok(()))
+                    .optional()?
+                    .is_some(),
+                CollectionSelector::SavedSearch(id) => self
+                    .connection
+                    .query_row("SELECT 1 FROM saved_searches WHERE id = ?1", [id], |_| {
+                        Ok(())
+                    })
+                    .optional()?
+                    .is_some(),
+            };
+            if !present {
+                let name = match collection {
+                    CollectionSelector::Feed(id) => format!("feed:{id}"),
+                    CollectionSelector::SavedSearch(id) => format!("saved-search:{id}"),
+                };
+                bail!(
+                    "collection {name} is not present in the local index; run `feedbinctl index`"
+                );
+            }
+        }
+        Ok(())
     }
 
     pub fn checkpoint(&self) -> Result<()> {
@@ -196,6 +387,61 @@ impl Database {
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(())
     }
+}
+
+fn collection_predicate(
+    collections: &[CollectionSelector],
+    first_parameter: usize,
+) -> (Option<String>, Vec<Value>) {
+    if collections.is_empty() {
+        return (None, Vec::new());
+    }
+
+    let feed_ids = collections
+        .iter()
+        .filter_map(|collection| match collection {
+            CollectionSelector::Feed(id) => Some(*id),
+            CollectionSelector::SavedSearch(_) => None,
+        });
+    let saved_search_ids = collections
+        .iter()
+        .filter_map(|collection| match collection {
+            CollectionSelector::Feed(_) => None,
+            CollectionSelector::SavedSearch(id) => Some(*id),
+        });
+
+    let mut parameter = first_parameter;
+    let mut values = Vec::new();
+    let mut clauses = Vec::new();
+
+    let feed_ids = feed_ids.collect::<Vec<_>>();
+    if !feed_ids.is_empty() {
+        let placeholders = placeholders(&mut parameter, feed_ids.len());
+        clauses.push(format!("e.feed_id IN ({placeholders})"));
+        values.extend(feed_ids.into_iter().map(Value::Integer));
+    }
+
+    let saved_search_ids = saved_search_ids.collect::<Vec<_>>();
+    if !saved_search_ids.is_empty() {
+        let placeholders = placeholders(&mut parameter, saved_search_ids.len());
+        clauses.push(format!(
+            "EXISTS (SELECT 1 FROM saved_search_entries sse WHERE sse.entry_id = e.id AND sse.saved_search_id IN ({placeholders}))"
+        ));
+        values.extend(saved_search_ids.into_iter().map(Value::Integer));
+    }
+
+    (Some(clauses.join(" OR ")), values)
+}
+
+fn placeholders(next: &mut usize, count: usize) -> String {
+    (0..count)
+        .map(|_| {
+            let placeholder = format!("?{next}");
+            *next += 1;
+            placeholder
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn store_entry(transaction: &Transaction<'_>, entry: &FeedEntry) -> Result<()> {
@@ -263,6 +509,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     match version {
         SCHEMA_VERSION => Ok(()),
+        1 => migrate_v1_schema(connection),
         0 if table_exists(connection, "entries")? => migrate_prototype_schema(connection),
         0 => create_schema(connection),
         other => bail!(
@@ -329,9 +576,48 @@ fn create_schema(connection: &Connection) -> Result<()> {
             value TEXT NOT NULL
         );
 
+        CREATE TABLE saved_searches (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            query TEXT NOT NULL
+        );
+
+        CREATE TABLE saved_search_entries (
+            saved_search_id INTEGER NOT NULL REFERENCES saved_searches(id) ON DELETE CASCADE,
+            entry_id INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            PRIMARY KEY (saved_search_id, entry_id)
+        );
+        CREATE INDEX saved_search_entries_by_entry
+            ON saved_search_entries(entry_id, saved_search_id);
+
         PRAGMA user_version = {SCHEMA_VERSION};
         "#
     ))?;
+    Ok(())
+}
+
+fn migrate_v1_schema(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        BEGIN IMMEDIATE;
+        CREATE TABLE saved_searches (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            query TEXT NOT NULL
+        );
+        CREATE TABLE saved_search_entries (
+            saved_search_id INTEGER NOT NULL REFERENCES saved_searches(id) ON DELETE CASCADE,
+            entry_id INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            PRIMARY KEY (saved_search_id, entry_id)
+        );
+        CREATE INDEX saved_search_entries_by_entry
+            ON saved_search_entries(entry_id, saved_search_id);
+        PRAGMA user_version = 2;
+        COMMIT;
+        "#,
+    )?;
     Ok(())
 }
 
@@ -396,21 +682,21 @@ mod tests {
         );
     }
 
-    fn subscription() -> Subscription {
+    fn subscription(feed_id: i64, title: &str) -> Subscription {
         Subscription {
-            id: 1,
-            feed_id: 2,
-            title: "Example Feed".to_string(),
-            feed_url: "https://example.com/feed".to_string(),
-            site_url: "https://example.com".to_string(),
+            id: feed_id + 100,
+            feed_id,
+            title: title.to_string(),
+            feed_url: format!("https://example.com/{feed_id}/feed"),
+            site_url: format!("https://example.com/{feed_id}"),
             created_at: "2026-01-01T00:00:00Z".to_string(),
         }
     }
 
-    fn entry(id: i64, created_at: &str, title: &str) -> FeedEntry {
+    fn entry(id: i64, feed_id: i64, created_at: &str, title: &str) -> FeedEntry {
         FeedEntry {
             id,
-            feed_id: 2,
+            feed_id,
             title: Some(title.to_string()),
             author: Some("Example Author".to_string()),
             summary: Some("not stored".to_string()),
@@ -431,28 +717,30 @@ mod tests {
     #[test]
     fn stores_compact_entries_searches_feed_names_and_pages_stably() {
         let mut database = in_memory_database();
-        database.store_feeds(&[subscription()]).unwrap();
+        database
+            .store_feeds(&[subscription(2, "Example Feed")])
+            .unwrap();
         database
             .store_entries(&[
-                entry(1, "2026-01-03T00:00:00Z", "Distributed soup"),
-                entry(2, "2026-01-02T00:00:00Z", "Title without URL"),
-                entry(3, "2026-01-01T00:00:00Z", "Oldest"),
+                entry(1, 2, "2026-01-03T00:00:00Z", "Distributed soup"),
+                entry(2, 2, "2026-01-02T00:00:00Z", "Title without URL"),
+                entry(3, 2, "2026-01-01T00:00:00Z", "Oldest"),
             ])
             .unwrap();
 
-        let newest = database.entries(2, None).unwrap();
+        let newest = database.entries(2, None, &[]).unwrap();
         assert_eq!(
             newest.iter().map(|entry| entry.id).collect::<Vec<_>>(),
             [1, 2]
         );
         assert_eq!(newest[1].url, None);
-        let older = database.entries(2, Some(2)).unwrap();
+        let older = database.entries(2, Some(2), &[]).unwrap();
         assert_eq!(older.iter().map(|entry| entry.id).collect::<Vec<_>>(), [3]);
 
-        let matches = database.search("distributed", 10).unwrap();
+        let matches = database.search("distributed", 10, &[]).unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].feed_title.as_deref(), Some("Example Feed"));
-        let feed_matches = database.search("feed_title:Example", 10).unwrap();
+        let feed_matches = database.search("feed_title:Example", 10, &[]).unwrap();
         assert_eq!(feed_matches.len(), 3);
 
         database.set_cursor("2026-01-03T00:00:00Z").unwrap();
@@ -465,15 +753,131 @@ mod tests {
     #[test]
     fn before_uses_id_to_disambiguate_equal_timestamps() {
         let mut database = in_memory_database();
-        database.store_feeds(&[subscription()]).unwrap();
+        database
+            .store_feeds(&[subscription(2, "Example Feed")])
+            .unwrap();
         database
             .store_entries(&[
-                entry(2, "2026-01-01T00:00:00Z", "Second"),
-                entry(1, "2026-01-01T00:00:00Z", "First"),
+                entry(2, 2, "2026-01-01T00:00:00Z", "Second"),
+                entry(1, 2, "2026-01-01T00:00:00Z", "First"),
             ])
             .unwrap();
 
-        assert_eq!(database.entries(1, None).unwrap()[0].id, 2);
-        assert_eq!(database.entries(1, Some(2)).unwrap()[0].id, 1);
+        assert_eq!(database.entries(1, None, &[]).unwrap()[0].id, 2);
+        assert_eq!(database.entries(1, Some(2), &[]).unwrap()[0].id, 1);
+    }
+
+    #[test]
+    fn lists_and_filters_feed_and_saved_search_collections() {
+        let mut database = in_memory_database();
+        database
+            .store_feeds(&[
+                subscription(2, "Example Feed"),
+                subscription(3, "Rust Feed"),
+            ])
+            .unwrap();
+        database
+            .store_entries(&[
+                entry(1, 2, "2026-01-03T00:00:00Z", "Emacs actors"),
+                entry(2, 3, "2026-01-02T00:00:00Z", "Emacs in Rust"),
+                entry(3, 2, "2026-01-01T00:00:00Z", "Other article"),
+            ])
+            .unwrap();
+        database
+            .store_saved_searches(&[(
+                SavedSearch {
+                    id: 7,
+                    name: "Reading List".to_string(),
+                    query: "emacs is:unread".to_string(),
+                },
+                vec![2, 3],
+            )])
+            .unwrap();
+
+        assert_eq!(
+            database.collections().unwrap(),
+            [
+                CollectionSummary::Feed {
+                    id: 2,
+                    name: "Example Feed".to_string(),
+                    feed_url: "https://example.com/2/feed".to_string(),
+                    site_url: "https://example.com/2".to_string(),
+                },
+                CollectionSummary::Feed {
+                    id: 3,
+                    name: "Rust Feed".to_string(),
+                    feed_url: "https://example.com/3/feed".to_string(),
+                    site_url: "https://example.com/3".to_string(),
+                },
+                CollectionSummary::SavedSearch {
+                    id: 7,
+                    name: "Reading List".to_string(),
+                    query: "emacs is:unread".to_string(),
+                },
+            ]
+        );
+
+        let feed = [CollectionSelector::Feed(2)];
+        assert_eq!(
+            database
+                .entries(10, None, &feed)
+                .unwrap()
+                .iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            [1, 3]
+        );
+        assert_eq!(database.entries(10, Some(1), &feed).unwrap()[0].id, 3);
+
+        let saved_search = [CollectionSelector::SavedSearch(7)];
+        assert_eq!(
+            database
+                .entries(10, None, &saved_search)
+                .unwrap()
+                .iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            [2, 3]
+        );
+        assert_eq!(
+            database.search("emacs", 10, &saved_search).unwrap()[0].id,
+            2
+        );
+
+        let union = [
+            CollectionSelector::Feed(2),
+            CollectionSelector::SavedSearch(7),
+        ];
+        assert_eq!(database.entries(10, None, &union).unwrap().len(), 3);
+
+        let error = database
+            .entries(10, None, &[CollectionSelector::Feed(999)])
+            .unwrap_err();
+        assert!(error.to_string().contains("feed:999"));
+    }
+
+    #[test]
+    fn migrates_v1_database_for_saved_searches() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE feeds (feed_id INTEGER PRIMARY KEY, title TEXT NOT NULL, feed_url TEXT NOT NULL, site_url TEXT NOT NULL);
+                CREATE TABLE entries (id INTEGER PRIMARY KEY, feed_id INTEGER NOT NULL, title TEXT, url TEXT, author TEXT, feed_title TEXT, published TEXT NOT NULL, created_at TEXT NOT NULL);
+                CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                PRAGMA user_version = 1;
+                "#,
+            )
+            .unwrap();
+
+        initialize_schema(&connection).unwrap();
+        assert!(table_exists(&connection, "saved_searches").unwrap());
+        assert!(table_exists(&connection, "saved_search_entries").unwrap());
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
     }
 }

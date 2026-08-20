@@ -1,7 +1,7 @@
 # feedbinctl
 
-Index compact metadata from Feedbin into SQLite, search it locally, and fetch
-complete entries on demand.
+Index compact metadata and collections from Feedbin into SQLite, search them
+locally, and fetch complete entries on demand.
 
 *Disclaimer:* This project is an exercise with Codex.
 
@@ -39,9 +39,10 @@ This makes the command suitable for cron:
 */15 * * * * /usr/local/bin/feedbinctl index
 ```
 
-Entries are fetched and committed one API page at a time. The cursor advances
-only after all pages succeed, so an interrupted run can safely be repeated.
-Upserts make repeated pages harmless.
+Entries are fetched and committed one API page at a time. Feed subscriptions,
+saved-search definitions, and saved-search membership are refreshed during the
+same run. The cursor advances only after all pages succeed, so an interrupted
+run can safely be repeated. Upserts make repeated entry pages harmless.
 
 To build a complete replacement database while leaving the current database in
 place until the download succeeds:
@@ -62,12 +63,33 @@ This keeps development indexing separate from the index used by an installed
 binary. Both profiles continue to use the same operating-system keyring entry.
 `XDG_DATA_HOME`, when set, must be an absolute path.
 
-Use `--database PATH` on `index`, `entries`, or `search` to override it.
+Use `--database PATH` on `index`, `collections`, `entries`, `search`, or `save`
+to override it.
+
+## List collections
+
+```sh
+feedbinctl collections
+```
+
+`collections` reads SQLite and lists both feeds and Feedbin saved searches as
+JSON. Each item has a `kind`, an `id`, and a `name`. Use those values to scope
+other local commands. Feedbin's `Pages` read-later collection appears as a feed,
+so it can be selected the same way as any subscription:
+
+```sh
+feedbinctl entries --collection feed:42
+feedbinctl search emacs --collection saved-search:7
+```
+
+Repeat `--collection` to include more than one collection. The selections are
+combined as a union. Omitting `--collection` uses all indexed entries.
 
 ## Browse recent entries
 
 ```sh
 feedbinctl entries --limit 50
+feedbinctl entries --collection feed:42
 ```
 
 `entries` reads SQLite and never contacts Feedbin. Results are ordered by
@@ -87,6 +109,7 @@ entries.
 feedbinctl search distributed
 feedbinctl search 'distributed AND systems'
 feedbinctl search 'feed_title:example' --limit 50
+feedbinctl search emacs --collection saved-search:7
 ```
 
 `search` is local and uses SQLite FTS5 syntax over title, URL, author, and feed
@@ -119,12 +142,26 @@ feedbinctl entry 5154510253
 `entry` contacts Feedbin and prints the complete current object, including
 `summary`, `content`, and `extracted_content_url`.
 
+## Save a page for later
+
+```sh
+feedbinctl save https://example.com/article
+feedbinctl save https://example.com/article --title "Example article"
+```
+
+`save` creates a Feedbin Page and prints the resulting entry as JSON. The title
+is optional and is only used when Feedbin cannot discover one. The compact
+entry is also written to the local index immediately; saved-search membership
+is refreshed by the next `index` run.
+
 Every command documents its behavior and examples through Clap:
 
 ```sh
 feedbinctl --help
 feedbinctl index --help
+feedbinctl collections --help
 feedbinctl entries --help
 feedbinctl search --help
+feedbinctl save --help
 feedbinctl entry --help
 ```

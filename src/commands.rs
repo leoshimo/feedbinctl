@@ -2,8 +2,8 @@ use anyhow::{Context, Result, bail};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::api::FeedbinClient;
-use crate::cli::{EntriesArgs, EntryArgs, IndexArgs, SearchArgs};
+use crate::api::{FeedbinClient, SavedSearch};
+use crate::cli::{CollectionsArgs, EntriesArgs, EntryArgs, IndexArgs, SaveArgs, SearchArgs};
 use crate::database::{Database, default_path};
 
 pub async fn index(args: IndexArgs) -> Result<()> {
@@ -24,6 +24,7 @@ pub async fn index(args: IndexArgs) -> Result<()> {
 
     let subscriptions = client.subscriptions().await?;
     database.store_feeds(&subscriptions)?;
+    let saved_searches = client.saved_searches().await?;
 
     let mut next = None;
     let mut fetched = 0usize;
@@ -68,6 +69,13 @@ pub async fn index(args: IndexArgs) -> Result<()> {
 
     validate_entry_count(expected_total, entry_ids.len(), fetched)?;
 
+    let mut indexed_saved_searches = Vec::with_capacity(saved_searches.len());
+    for search in saved_searches {
+        let entry_ids = saved_search_entry_ids(&client, &search).await?;
+        indexed_saved_searches.push((search, entry_ids));
+    }
+    database.store_saved_searches(&indexed_saved_searches)?;
+
     if let Some(cursor) = newest_cursor {
         database.set_cursor(&cursor)?;
     }
@@ -79,12 +87,47 @@ pub async fn index(args: IndexArgs) -> Result<()> {
     }
 
     println!(
-        "Indexed {} entries and {} feeds into {}",
+        "Indexed {} entries, {} feeds, and {} saved searches into {}",
         entry_ids.len(),
         subscriptions.len(),
+        indexed_saved_searches.len(),
         destination.display()
     );
     Ok(())
+}
+
+async fn saved_search_entry_ids(client: &FeedbinClient, search: &SavedSearch) -> Result<Vec<i64>> {
+    let mut next = None;
+    let mut entry_ids = Vec::new();
+    let mut unique = HashSet::new();
+    let mut expected_total = None;
+
+    loop {
+        let page = client
+            .saved_search_entry_ids_page(search.id, next.as_deref())
+            .await?;
+        expected_total = expected_total.or(page.total);
+        for entry_id in page.entry_ids {
+            if unique.insert(entry_id) {
+                entry_ids.push(entry_id);
+            }
+        }
+        next = page.next;
+        if next.is_none() {
+            break;
+        }
+    }
+
+    if let Some(expected) = expected_total
+        && unique.len() != expected
+    {
+        bail!(
+            "Feedbin reported {expected} entries for saved search {:?}, but pagination returned {} unique entries",
+            search.name,
+            unique.len()
+        );
+    }
+    Ok(entry_ids)
 }
 
 fn validate_entry_count(expected: Option<usize>, unique: usize, fetched: usize) -> Result<()> {
@@ -100,15 +143,32 @@ fn validate_entry_count(expected: Option<usize>, unique: usize, fetched: usize) 
 
 pub fn entries(args: EntriesArgs) -> Result<()> {
     let path = args.database.unwrap_or(default_path()?);
-    let entries = Database::open(&path)?.entries(args.limit, args.before)?;
+    let entries = Database::open(&path)?.entries(args.limit, args.before, &args.collections)?;
     println!("{}", serde_json::to_string_pretty(&entries)?);
+    Ok(())
+}
+
+pub fn collections(args: CollectionsArgs) -> Result<()> {
+    let path = args.database.unwrap_or(default_path()?);
+    let collections = Database::open(&path)?.collections()?;
+    println!("{}", serde_json::to_string_pretty(&collections)?);
     Ok(())
 }
 
 pub fn search(args: SearchArgs) -> Result<()> {
     let path = args.database.unwrap_or(default_path()?);
-    let results = Database::open(&path)?.search(&args.query, args.limit)?;
+    let results = Database::open(&path)?.search(&args.query, args.limit, &args.collections)?;
     println!("{}", serde_json::to_string_pretty(&results)?);
+    Ok(())
+}
+
+pub async fn save(args: SaveArgs) -> Result<()> {
+    let entry = FeedbinClient::from_stored_credentials()?
+        .save_page(&args.url, args.title.as_deref())
+        .await?;
+    let path = args.database.unwrap_or(default_path()?);
+    Database::open(&path)?.store_entries(std::slice::from_ref(&entry))?;
+    println!("{}", serde_json::to_string_pretty(&entry)?);
     Ok(())
 }
 
